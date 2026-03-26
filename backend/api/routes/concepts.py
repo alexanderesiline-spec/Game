@@ -1,5 +1,6 @@
 """Concept generator routes — persisted in DB, optionally auth'd."""
 
+import asyncio
 import uuid
 import logging
 from fastapi import APIRouter, HTTPException, Depends
@@ -44,7 +45,7 @@ async def start_concept(
     if len(req.concept) > 5000:
         raise HTTPException(400, "Concept too long. Max 5000 characters.")
 
-    result = generator.start_session(req.concept)
+    result = await asyncio.to_thread(generator.start_session, req.concept)
 
     session = ConceptSession(
         id=str(uuid.uuid4()),
@@ -80,7 +81,7 @@ async def continue_concept(
     if session.is_complete:
         raise HTTPException(400, "Session already complete")
 
-    result = generator.continue_session(session.messages, req.message)
+    result = await asyncio.to_thread(generator.continue_session, session.messages, req.message)
 
     session.messages = result["messages"]
     session.is_complete = result["is_complete"]

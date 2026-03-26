@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import {BookOpen, Sparkles, Zap, Palette, Download, ArrowRight} from "lucide-react";
+import {useAuthStore} from "@/lib/store";
 
 const STYLES = [
   {name: "Manga", desc: "B&W ink, screen tones, dramatic angles", emoji: "⚡"},
@@ -17,18 +18,31 @@ const STEPS = [
 ];
 
 export default function HomePage() {
+  const {token} = useAuthStore();
+
   return (
     <div className="min-h-screen">
       {/* Nav */}
       <nav className="flex items-center justify-between px-8 py-5 border-b border-[#2e2e4a]">
         <span className="text-2xl font-bold gradient-text">PanelForge</span>
-        <div className="flex gap-4">
+        <div className="flex gap-4 items-center">
           <Link href="/concept" className="px-4 py-2 text-sm text-gray-300 hover:text-white transition">
             Concept Generator
           </Link>
-          <Link href="/create" className="px-5 py-2 bg-[#7c3aed] hover:bg-[#6d28d9] rounded-lg text-sm font-semibold transition">
-            Start Creating
-          </Link>
+          {token ? (
+            <Link href="/dashboard" className="px-5 py-2 bg-[#7c3aed] hover:bg-[#6d28d9] rounded-lg text-sm font-semibold transition">
+              Dashboard
+            </Link>
+          ) : (
+            <>
+              <Link href="/login" className="px-4 py-2 text-sm text-gray-300 hover:text-white transition">
+                Log in
+              </Link>
+              <Link href="/login" className="px-5 py-2 bg-[#7c3aed] hover:bg-[#6d28d9] rounded-lg text-sm font-semibold transition">
+                Get Started
+              </Link>
+            </>
+          )}
         </div>
       </nav>
 
