@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0d0d1a;
+  --surface: #1a1a2e;
+  --border: #2e2e4a;
+  --accent: #7c3aed;
+  --accent-light: #a78bfa;
+}
+
+body {
+  background: var(--bg);
+  color: white;
+}
+
+/* Manga panel scan line effect */
+.panel-scanlines::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+  pointer-events: none;
+}
+
+/* Speed lines decoration */
+.speed-lines {
+  background: radial-gradient(ellipse at center,
+    transparent 0%,
+    transparent 40%,
+    rgba(124, 58, 237, 0.05) 100%
+  );
+}
+
+/* Comic panel hover effect */
+.comic-panel {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  border: 2px solid #2e2e4a;
+}
+.comic-panel:hover {
+  transform: scale(1.02);
+  box-shadow: 0 8px 32px rgba(124, 58, 237, 0.4);
+  border-color: #7c3aed;
+}
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, #a78bfa, #ec4899, #f59e0b);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Chat bubble */
+.chat-user {
+  background: linear-gradient(135deg, #7c3aed, #6d28d9);
+  border-radius: 18px 18px 4px 18px;
+}
+.chat-ai {
+  background: #1e1e3a;
+  border: 1px solid #2e2e4a;
+  border-radius: 18px 18px 18px 4px;
+}
+
+/* Progress bar shimmer */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.progress-shimmer {
+  background: linear-gradient(90deg, #7c3aed 25%, #a78bfa 50%, #7c3aed 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #1a1a2e; }
+::-webkit-scrollbar-thumb { background: #3d2f7e; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #7c3aed; }

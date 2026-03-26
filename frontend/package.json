@@ -1,0 +1,29 @@
+{
+  "name": "ai-comic-generator",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.18",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.7.2",
+    "@types/node": "^22.10.1",
+    "@types/react": "^18.3.16",
+    "@types/react-dom": "^18.3.5",
+    "tailwindcss": "^3.4.16",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "lucide-react": "^0.469.0",
+    "clsx": "^2.1.1",
+    "framer-motion": "^11.15.0",
+    "react-dropzone": "^14.3.5",
+    "react-hot-toast": "^2.4.1",
+    "zustand": "^5.0.2"
+  }
+}
