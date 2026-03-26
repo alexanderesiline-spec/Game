@@ -1,241 +1,252 @@
 """
-Story Parser — uses Claude to break a story into structured comic scenes.
-
-Extracts:
-- Characters with visual descriptions
-- Scene breakdowns with emotional beats
-- Dialogue and SFX
-- Panel composition suggestions
-- Pacing guidance
+Story Parser — Claude Opus 4.6 with adaptive thinking.
+Parses prose into structured comic script data with retries + JSON recovery.
 """
 
 import json
+import logging
+import re
 import anthropic
 from typing import Any
 
 from ..models.story import ComicStyle
 
+log = logging.getLogger(__name__)
 
-PARSE_SYSTEM_PROMPT = """You are an expert manga/comic artist and story adapter.
+PARSE_SYSTEM = """You are an expert manga/comic artist and story adapter.
 Your job is to convert prose into structured comic script data.
 
-You understand:
-- Visual storytelling and "show don't tell"
-- Panel composition, camera angles, and pacing
-- Character expression and body language
-- The difference between manga (B&W, dramatic angles, screen tones),
-  manhwa (full color, clean lines, vertical scroll), and
-  western comics (full color, traditional panels)
-- How to condense prose while keeping emotional impact
-- When to use big splash panels vs. small reaction panels
+You deeply understand:
+- Visual storytelling: show, don't tell
+- Panel composition, camera angles, pacing, timing
+- Character expression, body language, and emotion
+- The specific visual language of manga, manhwa, and western comics
+- How to condense prose while preserving emotional impact
+- When one big panel beats six small ones
 
-Always output valid JSON matching the requested schema exactly."""
+CRITICAL: Always output ONLY valid JSON. No markdown, no explanation, no code fences.
+If you're unsure about a value, use a reasonable default — never leave required fields empty."""
 
 
-STYLE_GUIDANCE = {
-    ComicStyle.MANGA: """
-MANGA STYLE NOTES:
-- Dramatic angle shifts (extreme close-ups, dutch angles, bird's-eye)
-- Expressive reactions with exaggerated emotions
-- Speed lines and motion blur
-- Screen tone descriptions for shadows and textures
-- Reading order: right-to-left panels
-- N-screentone: solid black, gray tones, patterns
-- Typical panel counts: 4-8 per page
-""",
-    ComicStyle.MANHWA: """
-MANHWA STYLE NOTES:
-- Vertical scroll format (single column of panels)
-- Full color, soft/pastel palette typical
-- Clean linework, detailed backgrounds
-- Expressive but more realistic proportions than manga
-- Wider panels showing more of the scene
-- Typical panel counts: 3-5 per vertical scroll section
-""",
-    ComicStyle.WESTERN: """
-WESTERN COMICS STYLE NOTES:
-- Traditional grid layout (2-3 rows, 2-3 columns)
-- Bold colors, heavy inks
-- More realistic proportions
-- Dynamic action poses
-- Speech bubbles with thick borders
-- Typical panel counts: 6-9 per page
-""",
+STYLE_NOTES = {
+    ComicStyle.MANGA: "MANGA: Dramatic angles, speed lines, screen tones, B&W, right-to-left, 4-8 panels/page, exaggerated reactions",
+    ComicStyle.MANHWA: "MANHWA: Full color, vertical scroll, clean lines, soft shading, 3-5 tall panels per section, realistic proportions",
+    ComicStyle.WESTERN: "WESTERN: Full color, bold inks, traditional grid layout, 6-9 panels/page, dynamic action poses",
 }
 
-CHARACTER_EXTRACT_PROMPT = """
-Analyze this story and extract ALL named characters.
-For each character, create a detailed visual description for AI image generation.
+CHARACTER_PROMPT = """Analyze this story and extract ALL named characters.
+Create detailed visual descriptions optimized for AI image generation.
 
-Return JSON in this exact format:
+Return ONLY this JSON (no markdown, no extra text):
 {
   "characters": [
     {
       "name": "Character Name",
-      "aliases": ["nickname1", "he/she/they"],
-      "role": "protagonist | antagonist | supporting | minor",
-      "age_range": "teen | young adult | adult | elderly",
-      "gender_presentation": "description",
-      "physical_description": "detailed visual: height, build, hair color/style, eye color, skin tone, distinguishing features",
-      "clothing_style": "typical outfit description for image prompts",
-      "personality_traits": ["trait1", "trait2"],
-      "first_appearance_chapter": "chapter/section where they appear",
-      "image_prompt_base": "concise image generation prompt capturing their look, suitable for SDXL/FLUX. Example: 'young woman, long silver hair, violet eyes, pale skin, wearing a blue academy uniform, serious expression'"
+      "role": "protagonist|antagonist|supporting|minor",
+      "age_range": "child|teen|young_adult|adult|elderly",
+      "image_prompt_base": "concise SDXL/FLUX prompt: physical features, hair, eyes, skin, clothing. Example: 'young woman, long silver hair, violet eyes, pale skin, blue school uniform, determined expression'"
     }
   ]
-}
-"""
+}"""
 
-SCENE_BREAKDOWN_PROMPT = """
-Break this story section into comic panels/pages.
-Create {panel_target} panels total, arranged into pages of {panels_per_page} panels each.
+SCENE_PROMPT = """Break this story into comic panels/pages for {style_label} style.
 
-For {style} style comics.
-{style_guidance}
+{style_notes}
 
-Return JSON in this exact format:
+Target: {panel_target} panels total, {panels_per_page} panels per page.
+
+CHARACTER REFERENCES (use exact names):
+{char_context}
+
+Return ONLY this JSON (no markdown, no code fences):
 {{
   "pages": [
     {{
       "page_number": 1,
-      "layout": "splash | grid_2x3 | grid_3x3 | vertical_strip | irregular",
+      "layout": "splash|grid_2x2|grid_2x3|grid_3x3|vertical_strip",
       "panels": [
         {{
           "panel_number": 1,
-          "size": "small | medium | large | splash",
-          "scene_description": "What's happening in this panel",
-          "setting": "location and time of day",
-          "characters_present": ["Character Name"],
-          "character_actions": {{
-            "Character Name": "what they are doing and their pose/expression"
-          }},
+          "size": "small|medium|large|splash",
+          "scene_description": "One sentence: what is happening",
+          "setting": "location and time",
+          "characters_present": ["Name1"],
+          "character_actions": {{"Name1": "action and expression"}},
           "dialogue": [
-            {{
-              "speaker": "Character Name",
-              "text": "speech text",
-              "bubble_style": "speech | thought | shout | whisper"
-            }}
+            {{"speaker": "Name1", "text": "spoken text", "bubble_style": "speech|thought|shout|whisper|narration"}}
           ],
-          "narration": "any caption/narration box text",
-          "sfx": ["BOOM", "CRASH"],
-          "camera_angle": "wide | medium | close-up | extreme-close-up | bird's-eye | worm's-eye | dutch-angle",
-          "lighting": "dramatic shadows | bright daylight | dim candlelight | neon glow | etc",
-          "mood": "tense | joyful | sorrowful | mysterious | action | romantic",
-          "image_generation_prompt": "detailed prompt for AI image generation of this exact panel. Include art style, characters, setting, lighting, mood. Example: 'manga style, young silver-haired girl in school uniform standing at rooftop edge, wind blowing her hair, dramatic sunset behind her, looking determined, cinematic composition'",
-          "negative_prompt": "blurry, bad anatomy, text, watermark, deformed"
+          "sfx": ["BOOM"],
+          "camera_angle": "wide|medium|close-up|extreme-close-up|birds-eye|worms-eye|dutch-angle",
+          "lighting": "bright daylight|dim indoor|dramatic shadows|neon glow|golden hour|night",
+          "mood": "tense|joyful|sad|mysterious|action|romantic|comedic|horrified",
+          "image_generation_prompt": "Detailed AI image prompt for this exact panel. Include: art style, character descriptions, setting, lighting, composition, mood. Be specific."
         }}
       ]
     }}
-  ],
-  "story_arc_notes": "brief description of the emotional journey across these panels"
-}}
-"""
+  ]
+}}"""
+
+
+def _clean_json(text: str) -> str:
+    """Strip markdown fences and find the first valid JSON object."""
+    text = text.strip()
+    # Remove ```json ... ``` or ``` ... ```
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    # Find the outermost { ... }
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("No JSON object found in response")
+    # Find matching closing brace
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i+1]
+    return text[start:]
+
+
+def _parse_json_with_recovery(text: str) -> dict:
+    """Try to parse JSON, with progressive recovery attempts."""
+    # Attempt 1: clean and parse directly
+    try:
+        return json.loads(_clean_json(text))
+    except Exception:
+        pass
+
+    # Attempt 2: fix common Claude JSON mistakes (trailing commas)
+    try:
+        cleaned = re.sub(r",\s*([}\]])", r"\1", _clean_json(text))
+        return json.loads(cleaned)
+    except Exception:
+        pass
+
+    # Attempt 3: extract with regex as last resort
+    raise ValueError(f"Could not parse JSON from response (first 200 chars): {text[:200]}")
 
 
 class StoryParser:
     def __init__(self, api_key: str):
         self.client = anthropic.Anthropic(api_key=api_key)
 
-    def extract_characters(self, story_text: str) -> dict[str, Any]:
-        """Extract characters from story with visual descriptions."""
+    def _call(self, prompt: str, max_tokens: int = 4096) -> str:
+        """Call Claude with adaptive thinking and return text content."""
         response = self.client.messages.create(
             model="claude-opus-4-6",
-            max_tokens=4096,
+            max_tokens=max_tokens,
             thinking={"type": "adaptive"},
-            system=PARSE_SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"{CHARACTER_EXTRACT_PROMPT}\n\nSTORY:\n{story_text[:50000]}",
-                }
-            ],
+            system=PARSE_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
         )
-        text = next(b.text for b in response.content if b.type == "text")
-        # Strip markdown code fences if present
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        return json.loads(text.strip())
+        return next(b.text for b in response.content if b.type == "text")
+
+    def extract_characters(self, story_text: str) -> dict[str, Any]:
+        """Extract characters with visual descriptions. Retries once on parse failure."""
+        truncated = story_text[:50000]
+        prompt = f"{CHARACTER_PROMPT}\n\nSTORY:\n{truncated}"
+
+        for attempt in range(2):
+            try:
+                text = self._call(prompt, max_tokens=4096)
+                return _parse_json_with_recovery(text)
+            except Exception as e:
+                if attempt == 0:
+                    log.warning(f"Character extraction attempt 1 failed: {e}. Retrying...")
+                else:
+                    log.error(f"Character extraction failed both attempts: {e}")
+                    return {"characters": []}
 
     def parse_scenes(
         self,
         story_text: str,
         style: ComicStyle,
         characters: list[dict],
-        chapters: int = 1,
         panels_per_page: int = None,
     ) -> dict[str, Any]:
-        """Parse story into structured panel/page data."""
+        """Parse story into pages + panels. Retries once on parse failure."""
         if panels_per_page is None:
-            panels_per_page = {"manga": 6, "manhwa": 4, "western": 6}[style.value]
+            panels_per_page = {"manga": 6, "manhwa": 4, "western": 6}.get(style.value, 5)
 
-        # Aim for roughly 1 panel per 150-200 words, capped sensibly
         word_count = len(story_text.split())
-        panel_target = max(6, min(int(word_count / 150), 80))
+        panel_target = max(6, min(int(word_count / 120), 80))
 
         char_context = "\n".join(
-            f"- {c['name']}: {c['image_prompt_base']}" for c in characters
-        )
+            f"- {c['name']} ({c.get('role','?')}): {c.get('image_prompt_base','')}"
+            for c in characters
+        ) or "No named characters identified."
 
-        prompt = (
-            SCENE_BREAKDOWN_PROMPT.format(
-                panel_target=panel_target,
-                panels_per_page=panels_per_page,
-                style=style.value.upper(),
-                style_guidance=STYLE_GUIDANCE[style],
-            )
-            + f"\n\nCHARACTERS IN THIS STORY:\n{char_context}"
-            + f"\n\nSTORY:\n{story_text[:60000]}"
-        )
+        prompt = SCENE_PROMPT.format(
+            style_label=style.value.upper(),
+            style_notes=STYLE_NOTES[style],
+            panel_target=panel_target,
+            panels_per_page=panels_per_page,
+            char_context=char_context,
+        ) + f"\n\nSTORY:\n{story_text[:60000]}"
 
-        response = self.client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=8192,
-            thinking={"type": "adaptive"},
-            system=PARSE_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = next(b.text for b in response.content if b.type == "text")
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        return json.loads(text.strip())
+        for attempt in range(2):
+            try:
+                text = self._call(prompt, max_tokens=8192)
+                return _parse_json_with_recovery(text)
+            except Exception as e:
+                if attempt == 0:
+                    log.warning(f"Scene parsing attempt 1 failed: {e}. Retrying...")
+                else:
+                    log.error(f"Scene parsing failed both attempts: {e}")
+                    # Return minimal fallback structure
+                    return {
+                        "pages": [{
+                            "page_number": 1,
+                            "layout": "vertical_strip",
+                            "panels": [{
+                                "panel_number": 1,
+                                "size": "splash",
+                                "scene_description": "Story scene",
+                                "setting": "Unknown location",
+                                "characters_present": [],
+                                "character_actions": {},
+                                "dialogue": [],
+                                "sfx": [],
+                                "camera_angle": "medium",
+                                "lighting": "natural daylight",
+                                "mood": "neutral",
+                                "image_generation_prompt": story_text[:200],
+                            }],
+                        }]
+                    }
 
-    def refine_panel_prompt(
+    def build_panel_prompt(
         self,
         panel: dict,
         characters: list[dict],
         style: ComicStyle,
-        prev_panel_desc: str = "",
     ) -> str:
-        """Build a final, high-quality image prompt for a panel."""
-        char_descriptions = {c["name"]: c["image_prompt_base"] for c in characters}
+        """Build a final enriched image prompt for a panel."""
+        char_map = {c["name"]: c.get("image_prompt_base", "") for c in characters}
 
         style_prefix = {
-            ComicStyle.MANGA: "manga panel, black and white, ink illustration, screen tones, dramatic linework",
-            ComicStyle.MANHWA: "manhwa panel, full color, clean digital art, soft coloring, webtoon style",
-            ComicStyle.WESTERN: "western comic panel, full color, bold inks, dynamic illustration, superhero comic style",
+            ComicStyle.MANGA:   "manga art, black and white, ink illustration, screen tones",
+            ComicStyle.MANHWA:  "manhwa art, full color, clean digital illustration, webtoon style",
+            ComicStyle.WESTERN: "western comic art, full color, bold inks, superhero comic style",
         }[style]
 
-        characters_in_panel = panel.get("characters_present", [])
-        char_prompts = []
-        for name in characters_in_panel:
-            if name in char_descriptions:
+        # Inject character visual descriptions into the prompt
+        char_parts = []
+        for name in panel.get("characters_present", []):
+            if name in char_map and char_map[name]:
                 action = panel.get("character_actions", {}).get(name, "")
-                char_prompts.append(f"{char_descriptions[name]}, {action}".strip(", "))
+                char_parts.append(f"{char_map[name]}{', ' + action if action else ''}")
 
         components = [
             style_prefix,
             panel.get("image_generation_prompt", ""),
-            ", ".join(char_prompts) if char_prompts else "",
+            *char_parts,
             panel.get("setting", ""),
             panel.get("lighting", ""),
-            f"camera: {panel.get('camera_angle', 'medium shot')}",
-            f"mood: {panel.get('mood', 'neutral')}",
+            f"{panel.get('camera_angle', 'medium shot')} shot",
+            panel.get("mood", ""),
             "high quality, detailed, professional comic art",
         ]
-        return ", ".join(c for c in components if c)
+        return ", ".join(c.strip() for c in components if c.strip())

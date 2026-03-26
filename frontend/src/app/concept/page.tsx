@@ -5,6 +5,7 @@ import {useRouter} from "next/navigation";
 import {Send, Sparkles, ArrowRight, BookOpen, Loader2} from "lucide-react";
 import toast from "react-hot-toast";
 import {conceptsApi, storiesApi, type StoryData} from "@/lib/api";
+import {useAuthStore} from "@/lib/store";
 
 interface Message {
   role: "user" | "assistant";
@@ -20,6 +21,7 @@ const STARTER_IDEAS = [
 
 export default function ConceptPage() {
   const router = useRouter();
+  const {token} = useAuthStore();
   const [phase, setPhase] = useState<"idea" | "chat" | "complete">("idea");
   const [inputText, setInputText] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -29,6 +31,10 @@ export default function ConceptPage() {
   const [selectedStyle, setSelectedStyle] = useState("manhwa");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (!token) router.replace("/login");
+  }, [token]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({behavior: "smooth"});

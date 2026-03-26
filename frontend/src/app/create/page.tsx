@@ -6,6 +6,7 @@ import {useDropzone} from "react-dropzone";
 import {Upload, FileText, Type, Loader2, Zap, BookOpen} from "lucide-react";
 import toast from "react-hot-toast";
 import {storiesApi, comicsApi} from "@/lib/api";
+import {useAuthStore} from "@/lib/store";
 import Link from "next/link";
 
 type InputMode = "text" | "upload";
@@ -13,6 +14,7 @@ type InputMode = "text" | "upload";
 function CreatePageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const {token} = useAuthStore();
   const [mode, setMode] = useState<InputMode>("text");
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -20,6 +22,10 @@ function CreatePageInner() {
   const [quality, setQuality] = useState("standard");
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!token) router.replace("/login");
+  }, [token]);
 
   // Auto-generate if coming from concept page
   useEffect(() => {

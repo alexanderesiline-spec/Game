@@ -1,8 +1,23 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem("panelforge-auth");
+    return raw ? JSON.parse(raw)?.state?.token ?? null : null;
+  } catch {
+    return null;
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getToken();
   const res = await fetch(`${API_URL}${path}`, {
-    headers: {"Content-Type": "application/json", ...options?.headers},
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? {Authorization: `Bearer ${token}`} : {}),
+      ...options?.headers,
+    },
     ...options,
   });
   if (!res.ok) {
@@ -12,7 +27,51 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
-// ─── Concepts ────────────────────────────────────────────────────────────────
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+export interface TokenResponse {
+  access_token: string;
+  user_id: string;
+  email: string;
+  credits: number;
+}
+
+export const authApi = {
+  register: (email: string, password: string) =>
+    request<TokenResponse>("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({email, password}),
+    }),
+  login: (email: string, password: string) =>
+    request<TokenResponse>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({email, password}),
+    }),
+  me: () =>
+    request<{id: string; email: string; credits: number; created_at: string}>("/api/auth/me"),
+};
+
+// ─── Billing ──────────────────────────────────────────────────────────────────
+
+export interface Tier {
+  id: string;
+  label: string;
+  credits: number;
+  price_cents: number;
+  price_dollars: number;
+}
+
+export const billingApi = {
+  getTiers: () => request<Tier[]>("/api/billing/tiers"),
+  createCheckout: (tier: string, success_url: string, cancel_url: string) =>
+    request<{checkout_url: string; session_id: string}>("/api/billing/checkout", {
+      method: "POST",
+      body: JSON.stringify({tier, success_url, cancel_url}),
+    }),
+  getBalance: () => request<{credits: number; user_id: string}>("/api/billing/balance"),
+};
+
+// ─── Concepts ─────────────────────────────────────────────────────────────────
 
 export interface ConceptSession {
   session_id: string;
@@ -45,11 +104,9 @@ export const conceptsApi = {
       method: "POST",
       body: JSON.stringify({session_id, message}),
     }),
-  get: (session_id: string) =>
-    request<ConceptSession & {messages: Array<{role: string; content: string}>}>(`/api/concepts/${session_id}`),
 };
 
-// ─── Stories ─────────────────────────────────────────────────────────────────
+// ─── Stories ──────────────────────────────────────────────────────────────────
 
 export interface Story {
   id: string;
@@ -66,17 +123,28 @@ export const storiesApi = {
       method: "POST",
       body: JSON.stringify({title, content, style}),
     }),
-  uploadFile: (formData: FormData) =>
-    fetch(`${API_URL}/api/stories/upload`, {method: "POST", body: formData}).then(
-      (r) => r.json() as Promise<Story>
-    ),
+  uploadFile: (formData: FormData) => {
+    const token = getToken();
+    return fetch(`${API_URL}/api/stories/upload`, {
+      method: "POST",
+      headers: token ? {Authorization: `Bearer ${token}`} : {},
+      body: formData,
+    }).then(async (r) => {
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({detail: r.statusText}));
+        throw new Error(err.detail || "Upload failed");
+      }
+      return r.json() as Promise<Story>;
+    });
+  },
   createFromConcept: (title: string, content: string, style: string) =>
-    request<Story>(
-      `/api/stories/from-concept?title=${encodeURIComponent(title)}&content=${encodeURIComponent(content)}&style=${style}`,
-      {method: "POST"}
-    ),
-  list: () => request<Story[]>("/api/stories/"),
-  get: (id: string) => request<Story & {content: string}>(`/api/stories/${id}`),
+    request<Story>("/api/stories/from-concept", {
+      method: "POST",
+      body: JSON.stringify({title, content, style}),
+    }),
+  get: (id: string) =>
+    request<Story & {content: string}>(`/api/stories/${id}`),
+  list: () => request<Array<{id: string; title: string; style: string; word_count: number}>>("/api/stories/"),
 };
 
 // ─── Comics ───────────────────────────────────────────────────────────────────
@@ -88,6 +156,7 @@ export interface ComicJob {
   style: string;
   status: string;
   progress: number;
+  status_message: string;
   page_count: number;
   error?: string | null;
 }
@@ -99,6 +168,7 @@ export interface ComicPages {
   status: string;
   pages: PageData[];
   characters: CharacterData[];
+  character_references: Record<string, string>;
   export_paths: Record<string, string>;
 }
 
@@ -115,7 +185,8 @@ export interface PanelData {
   dialogue: Array<{speaker: string; text: string; bubble_style: string}>;
   sfx: string[];
   mood: string;
-  image?: {url: string; width: number; height: number};
+  image?: {url: string; width: number; height: number} | null;
+  image_error?: string;
 }
 
 export interface CharacterData {
@@ -134,3 +205,20 @@ export const comicsApi = {
   getPages: (id: string) => request<ComicPages>(`/api/comics/${id}/pages`),
   list: () => request<ComicJob[]>("/api/comics/"),
 };
+
+// ─── WebSocket ────────────────────────────────────────────────────────────────
+
+export function connectComicWS(
+  comicId: string,
+  onMessage: (data: Record<string, unknown>) => void
+): () => void {
+  const wsUrl = API_URL.replace(/^http/, "ws") + `/api/comics/${comicId}/ws`;
+  const ws = new WebSocket(wsUrl);
+  ws.onmessage = (e) => {
+    try {
+      onMessage(JSON.parse(e.data));
+    } catch {}
+  };
+  ws.onerror = () => {/* silent — polling is fallback */};
+  return () => ws.close();
+}

@@ -1,26 +1,30 @@
-"""Concept generator routes — interactive Q&A to build story concepts."""
+"""Concept generator routes — persisted in DB, optionally auth'd."""
 
 import uuid
+import logging
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..services.concept_generator import ConceptGenerator
-from ..dependencies import get_concept_generator, get_db
+from ..database import ConceptSession, User
+from ..auth import get_current_user_optional
+from ..dependencies import get_db, get_concept_generator
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/concepts", tags=["concepts"])
 
 
-class StartConceptRequest(BaseModel):
+class StartRequest(BaseModel):
     concept: str
 
 
-class ContinueConceptRequest(BaseModel):
+class ContinueRequest(BaseModel):
     session_id: str
     message: str
 
 
-class ConceptSessionResponse(BaseModel):
+class SessionResponse(BaseModel):
     session_id: str
     reply: str
     is_complete: bool
@@ -28,72 +32,82 @@ class ConceptSessionResponse(BaseModel):
     message_count: int
 
 
-# In-memory session store (replace with Redis for production)
-_sessions: dict[str, dict] = {}
-
-
-@router.post("/start", response_model=ConceptSessionResponse)
+@router.post("/start", response_model=SessionResponse)
 async def start_concept(
-    req: StartConceptRequest,
-    generator: ConceptGenerator = Depends(get_concept_generator),
+    req: StartRequest,
+    db: AsyncSession = Depends(get_db),
+    generator=Depends(get_concept_generator),
+    current_user: User | None = Depends(get_current_user_optional),
 ):
-    """Start a new concept development session."""
     if not req.concept.strip():
         raise HTTPException(400, "Concept cannot be empty")
+    if len(req.concept) > 5000:
+        raise HTTPException(400, "Concept too long. Max 5000 characters.")
 
     result = generator.start_session(req.concept)
-    session_id = str(uuid.uuid4())
-    _sessions[session_id] = {
-        "messages": result["messages"],
-        "is_complete": False,
-        "story_data": None,
-    }
 
-    return ConceptSessionResponse(
-        session_id=session_id,
+    session = ConceptSession(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id if current_user else None,
+        messages=result["messages"],
+        is_complete=result["is_complete"],
+        story_data=result.get("story_data"),
+    )
+    db.add(session)
+    await db.commit()
+
+    return SessionResponse(
+        session_id=session.id,
         reply=result["reply"],
-        is_complete=False,
+        is_complete=result["is_complete"],
+        story_data=result.get("story_data"),
         message_count=len(result["messages"]),
     )
 
 
-@router.post("/continue", response_model=ConceptSessionResponse)
+@router.post("/continue", response_model=SessionResponse)
 async def continue_concept(
-    req: ContinueConceptRequest,
-    generator: ConceptGenerator = Depends(get_concept_generator),
+    req: ContinueRequest,
+    db: AsyncSession = Depends(get_db),
+    generator=Depends(get_concept_generator),
 ):
-    """Continue a concept development Q&A session."""
-    session = _sessions.get(req.session_id)
+    result_row = await db.execute(
+        select(ConceptSession).where(ConceptSession.id == req.session_id)
+    )
+    session = result_row.scalar_one_or_none()
     if not session:
         raise HTTPException(404, "Session not found")
+    if session.is_complete:
+        raise HTTPException(400, "Session already complete")
 
-    if session["is_complete"]:
-        raise HTTPException(400, "This session is already complete")
+    result = generator.continue_session(session.messages, req.message)
 
-    result = generator.continue_session(session["messages"], req.message)
+    session.messages = result["messages"]
+    session.is_complete = result["is_complete"]
+    if result.get("story_data"):
+        session.story_data = result["story_data"]
+    await db.commit()
 
-    session["messages"] = result["messages"]
-    session["is_complete"] = result["is_complete"]
-    session["story_data"] = result["story_data"]
-
-    return ConceptSessionResponse(
+    return SessionResponse(
         session_id=req.session_id,
         reply=result["reply"],
         is_complete=result["is_complete"],
-        story_data=result["story_data"],
+        story_data=result.get("story_data"),
         message_count=len(result["messages"]),
     )
 
 
 @router.get("/{session_id}")
-async def get_session(session_id: str):
-    """Get the current state of a concept session."""
-    session = _sessions.get(session_id)
+async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(ConceptSession).where(ConceptSession.id == session_id)
+    )
+    session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(404, "Session not found")
     return {
-        "session_id": session_id,
-        "messages": session["messages"],
-        "is_complete": session["is_complete"],
-        "story_data": session["story_data"],
+        "session_id": session.id,
+        "messages": session.messages,
+        "is_complete": session.is_complete,
+        "story_data": session.story_data,
     }
