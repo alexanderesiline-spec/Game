@@ -89,9 +89,9 @@ export default function ComicPage() {
 
       // Comic still in progress — connect WebSocket for live updates
       const cleanup = connectComicWS(id, async (msg) => {
-        const {event, status, progress, status_message, error} = msg as any;
+        const {type, status, progress, status_message, error} = msg as any;
 
-        if (event === "progress" || event === "status") {
+        if (type === "progress" || type === "complete" || type === "error") {
           setJob((prev) =>
             prev
               ? {...prev, status: status ?? prev.status, progress: progress ?? prev.progress, status_message: status_message ?? prev.status_message}

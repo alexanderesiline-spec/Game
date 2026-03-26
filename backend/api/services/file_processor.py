@@ -3,7 +3,7 @@ File Processor — handles text extraction from uploaded files.
 Supports: TXT, PDF, EPUB
 """
 
-import io
+import asyncio
 from pathlib import Path
 
 import aiofiles
@@ -29,27 +29,33 @@ async def _read_txt(filepath: str) -> str:
 
 
 async def _read_pdf(filepath: str) -> str:
-    import PyPDF2
+    def _sync() -> str:
+        import PyPDF2
 
-    text_parts = []
-    with open(filepath, "rb") as f:
-        reader = PyPDF2.PdfReader(f)
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                text_parts.append(text)
-    return "\n\n".join(text_parts)
+        text_parts = []
+        with open(filepath, "rb") as f:
+            reader = PyPDF2.PdfReader(f)
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    text_parts.append(text)
+        return "\n\n".join(text_parts)
+
+    return await asyncio.to_thread(_sync)
 
 
 async def _read_epub(filepath: str) -> str:
-    import ebooklib
-    from ebooklib import epub
-    from bs4 import BeautifulSoup
+    def _sync() -> str:
+        import ebooklib
+        from ebooklib import epub
+        from bs4 import BeautifulSoup
 
-    book = epub.read_epub(filepath)
-    text_parts = []
-    for item in book.get_items():
-        if item.get_type() == ebooklib.ITEM_DOCUMENT:
-            soup = BeautifulSoup(item.get_content(), "html.parser")
-            text_parts.append(soup.get_text())
-    return "\n\n".join(text_parts)
+        book = epub.read_epub(filepath)
+        text_parts = []
+        for item in book.get_items():
+            if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                soup = BeautifulSoup(item.get_content(), "html.parser")
+                text_parts.append(soup.get_text())
+        return "\n\n".join(text_parts)
+
+    return await asyncio.to_thread(_sync)

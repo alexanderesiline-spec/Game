@@ -7,6 +7,7 @@ Tiers:
   pro      → 40 comics → $59
 """
 
+import asyncio
 import stripe
 from fastapi import APIRouter, HTTPException, Depends, Request, Header
 from pydantic import BaseModel
@@ -53,24 +54,30 @@ async def create_checkout(
 
     stripe.api_key = settings.stripe_secret_key
 
-    session = stripe.checkout.Session.create(
-        payment_method_types=["card"],
-        line_items=[{
-            "price_data": {
-                "currency": "usd",
-                "product_data": {"name": tier["label"]},
-                "unit_amount": tier["price_cents"],
+    _user_id = current_user.id
+    _tier_key = req.tier
+    _success_url = req.success_url
+    _cancel_url = req.cancel_url
+    session = await asyncio.to_thread(
+        lambda: stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": tier["label"]},
+                    "unit_amount": tier["price_cents"],
+                },
+                "quantity": 1,
+            }],
+            mode="payment",
+            success_url=_success_url + "?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url=_cancel_url,
+            metadata={
+                "user_id": _user_id,
+                "tier": _tier_key,
+                "credits": tier["credits"],
             },
-            "quantity": 1,
-        }],
-        mode="payment",
-        success_url=req.success_url + "?session_id={CHECKOUT_SESSION_ID}",
-        cancel_url=req.cancel_url,
-        metadata={
-            "user_id": current_user.id,
-            "tier": req.tier,
-            "credits": tier["credits"],
-        },
+        )
     )
 
     # Record pending order

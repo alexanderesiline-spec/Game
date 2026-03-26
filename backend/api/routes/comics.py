@@ -38,7 +38,6 @@ class _WSManager:
 
     def disconnect(self, comic_id: str, ws: WebSocket):
         if comic_id in self._connections:
-            self._connections[comic_id].discard(ws) if hasattr(self._connections[comic_id], 'discard') else None
             try:
                 self._connections[comic_id].remove(ws)
             except ValueError:
@@ -225,7 +224,6 @@ async def comic_progress_ws(comic_id: str, websocket: WebSocket):
 
 async def _update(comic_id: str, status: str, progress: int, message: str, **extra):
     """Update comic in DB and push to WebSocket subscribers."""
-    from .comics import ws_manager
     from ..database import get_session_factory
     from ..dependencies import get_settings
 
@@ -259,7 +257,6 @@ async def _run_pipeline(
     include_text: bool,
     settings,
 ):
-    from .comics import _update
     from ..services.story_parser import StoryParser
     from ..services.image_generator import ImageGenerator
     from ..services.comic_assembler import ComicAssembler
@@ -272,13 +269,13 @@ async def _run_pipeline(
     try:
         # Step 1: Extract characters
         await _update(comic_id, "parsing", 5, "Extracting characters...")
-        char_data = parser.extract_characters(story_content)
+        char_data = await asyncio.to_thread(parser.extract_characters, story_content)
         characters = char_data.get("characters", [])
         log.info(f"[{comic_id}] Found {len(characters)} characters")
 
         # Step 2: Parse scenes
         await _update(comic_id, "parsing", 18, "Breaking story into panels...")
-        scene_data = parser.parse_scenes(story_content, style=style, characters=characters)
+        scene_data = await asyncio.to_thread(parser.parse_scenes, story_content, style, characters)
         pages_raw = scene_data.get("pages", [])
         log.info(f"[{comic_id}] Generated {len(pages_raw)} pages")
 

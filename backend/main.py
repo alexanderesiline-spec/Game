@@ -84,6 +84,7 @@ app.add_middleware(
 # ── Static file serving ───────────────────────────────────────────────────────
 
 storage = Path(settings.storage_path)
+storage.mkdir(parents=True, exist_ok=True)  # must exist before StaticFiles mount
 app.mount("/files", StaticFiles(directory=str(storage)), name="files")
 
 # ── Routes ────────────────────────────────────────────────────────────────────
